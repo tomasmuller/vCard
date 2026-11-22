@@ -35,7 +35,7 @@
   <link rel="preload" href="fonts/allo-1.0.3-subset.woff2" as="font" type="font/woff2" crossorigin>
   <style>
     /* Allo 1.0.3 by Josh Puckett, SIL Open Font License 1.1 (fonts/OFL.txt).
-       Subset to the letters of the name and the two links. */
+       Subset to the letters of the name and the two links, plus a plain "a". */
     @font-face {
       font-family: Allo;
       src: url(fonts/allo-1.0.3-subset.woff2) format("woff2");
@@ -178,6 +178,7 @@
     /* The name. Stacked, its widest word spans the card; on one line the whole name does.
        The divisors are the measured widths of "Augusto" and of the full name, in em. */
     .name {
+      grid-area: 1 / 1;
       font-size: min(23vw, 18vh);
       font-size: min(100cqw / 3.96, 20cqh);
       font-weight: 800;
@@ -188,6 +189,21 @@
 
     .name span {
       display: block;
+    }
+
+    /* While a mark of "á" or "ü" is off its letter (see the script), a copy of the name
+       in plain letters stands in for the name and the marks are drawn over it. The
+       heading keeps its words throughout, for whoever reads the page without seeing it. */
+    .bare {
+      visibility: hidden;
+    }
+
+    .drawn .bare {
+      visibility: visible;
+    }
+
+    .drawn .name:not(.bare) {
+      opacity: 0;
     }
 
     @media (min-aspect-ratio: 5/4) {
@@ -287,17 +303,30 @@
       pointer-events: none;
     }
 
-    .rope {
+    .rope,
+    .marks {
       position: absolute;
       inset: 0;
       width: 100%;
       height: 100%;
       overflow: visible;
+      pointer-events: none;
+    }
+
+    .rope {
       fill: none;
       stroke: currentColor;
       stroke-width: 8px;
       opacity: 0;
-      pointer-events: none;
+    }
+
+    .marks {
+      fill: currentColor;
+      visibility: hidden;
+    }
+
+    .drawn .marks {
+      visibility: visible;
     }
 
     .keys .rope {
@@ -442,6 +471,7 @@
         let hold = null; // the finger on the string, if any
         let raf = 0;
         let then = 0;
+        let clock = 0; // ms of frames so far: the marks' sense of time, which stops when the frames do
 
         const measure = () => {
           W = stage.clientWidth;
@@ -449,12 +479,16 @@
           L = Math.hypot(W, H);
         };
 
+        // How far along the string a point of the stage lies: 0 at the bottom-left corner,
+        // 1 at the top-right.
+        const along = (x, y) => (x * W + (H - y) * H) / (L * L);
+
         // A string pulled to (x, y) makes two straight runs that meet at the finger. In modes
         // that shape is sin(nπs)/n², softened so the cut-off series does not ripple, and
         // scaled so the curve passes through the finger.
         // Returns where along the string the finger is (0..1) and how far it has pulled (px).
         const aim = (x, y) => {
-          const s = Math.min(0.93, Math.max(0.07, (x * W + (H - y) * H) / (L * L)));
+          const s = Math.min(0.93, Math.max(0.07, along(x, y)));
           const pull = ((H - y) * W - x * H) / L;
           let peak = 0;
           for (let n = 0; n < MODES; n++) {
@@ -488,9 +522,20 @@
           if (stage.classList.contains('keys')) ropes.forEach((rope) => rope.setAttribute('d', d));
         };
 
+        // One exact step of a damped spring: where it is and how fast it moves dt seconds
+        // on, for an angular frequency w and a decay rate g below w.
+        const swing = (p, v, w, g, dt) => {
+          const wd = Math.sqrt(w * w - g * g);
+          const e = Math.exp(-g * dt);
+          const c = Math.cos(wd * dt);
+          const s = Math.sin(wd * dt);
+          return [e * (p * c + ((v + g * p) / wd) * s), e * (v * c - ((w * w * p + g * v) / wd) * s)];
+        };
+
         const frame = (now) => {
-          const dt = Math.min(0.05, (now - then) / 1000);
+          const dt = Math.max(0, Math.min(0.05, (now - then) / 1000));
           then = now;
+          clock += dt * 1000;
           let moving = !!hold;
           if (hold) {
             // The string eases to the finger in about a tenth of a second, then stays on it.
@@ -504,14 +549,7 @@
             for (let n = 0; n < MODES; n++) {
               const w = TAU * PITCH * (n + 1);
               const g = Math.min(3.4 + 1.6 * n * n, 0.9 * w); // higher modes die sooner
-              const wd = Math.sqrt(w * w - g * g);
-              const e = Math.exp(-g * dt);
-              const c = Math.cos(wd * dt);
-              const s = Math.sin(wd * dt);
-              const p = pos[n];
-              const v = vel[n];
-              pos[n] = e * (p * c + ((v + g * p) / wd) * s);
-              vel[n] = e * (v * c - ((w * w * p + g * v) / wd) * s);
+              [pos[n], vel[n]] = swing(pos[n], vel[n], w, g, dt);
               if (Math.abs(pos[n]) > 0.2 || Math.abs(vel[n]) > 4) moving = true;
             }
             if (!moving) {
@@ -520,6 +558,7 @@
             }
           }
           draw(moving);
+          if (fly(dt)) moving = true;
           raf = moving ? requestAnimationFrame(frame) : 0;
         };
 
@@ -527,6 +566,228 @@
           if (raf) return;
           then = performance.now();
           raf = requestAnimationFrame(frame);
+        };
+
+        // The marks. The letters of the name never move, but the acute of "á" and the two
+        // dots of "ü" sit loose on them: the string throws them when it is let go, and they
+        // fall back. While one of them is off its letter, the name is shown in plain letters
+        // with the three marks drawn on top, from the font's own outlines and in both fields,
+        // like everything else. At rest the heading's own letters are back, marks and all:
+        // the resting name is the font's, as the resting line is the stylesheet's.
+        // One path per mark, in font units, y down, from the plain letter's origin on the
+        // baseline.
+        // Generated by _tools/marks.py at wght 800, ROND 100, opsz 32, font sha256 001dd1d93bcb.
+        const EM = 2048;
+        const MARKS = {
+          á: ['a', 'M591.4 -1159Q551.1 -1159 523.9 -1184.1Q496.6 -1209.3 490.1 -1245.9Q483.6 -1282.5 504.9 -1317.1L572.6 -1425.5Q587.8 -1450.4 613.4 -1464.5Q639.1 -1478.6 668.5 -1478.6Q718.3 -1478.6 749.5 -1445.8Q780.6 -1413.1 783.5 -1367.9Q786.4 -1322.7 752 -1286.4L666.1 -1191.6Q651.6 -1176 632.5 -1167.5Q613.5 -1159 591.4 -1159Z'],
+          ü: ['u', 'M547.3 -1306.8Q547.3 -1231.2 494.4 -1181.1Q441.6 -1131.1 361.6 -1131.1Q282.7 -1131.1 230.3 -1181.4Q177.9 -1231.6 177.9 -1306.7Q177.9 -1383.8 230.3 -1433.6Q282.7 -1483.5 361.6 -1483.5Q441.6 -1483.5 494.4 -1433.7Q547.3 -1383.9 547.3 -1306.8Z', 'M1000.5 -1306.8Q1000.5 -1231.2 947.5 -1181.1Q894.5 -1131.1 814.8 -1131.1Q735.2 -1131.1 682.9 -1181.4Q630.5 -1231.6 630.5 -1306.7Q630.5 -1383.8 682.9 -1433.6Q735.2 -1483.5 814.8 -1483.5Q894.5 -1483.5 947.5 -1433.7Q1000.5 -1383.9 1000.5 -1306.8Z'],
+        };
+
+        // Lengths below are in em of the name, so the motion is the same at any size.
+        const GRAVITY = 17.8; // em/s²: the highest jump is back down in 0.6 s
+        const leap = (share) => Math.sqrt(2 * GRAVITY * (0.06 + 0.74 * share)); // speed for a hop of 0.06 em up to a jump of 0.8
+        const SOFT = TAU * 2.9; // the spring in a squash or a tilt, under three swings a second like the string
+        const DAMP = 0.4 * SOFT;
+        const KICK = 1.66 * SOFT; // the push that makes such a spring peak at 1
+        const LEAN = 0.03; // how far the dots of "ü" lean toward the finger
+        const TOP = 1.8; // however fast the plucks come, no mark climbs higher
+        const spots = []; // one for each letter that carries marks
+        let bare; // the copy of the name in plain letters
+        let em; // the name's font size, px
+
+        // Each mark is drawn from its letter's origin on the baseline. Nothing may wrap the
+        // letter, or kerning would break, so two helpers find the spot and are taken out
+        // again. A box of no size at the end of the word stands on the baseline, and a
+        // hidden ruler inside it gives the width of the word up to the letter. The ruler
+        // is an inline box, the only kind whose width no browser rounds.
+        const probe = doc.createElement('span');
+        probe.style.display = 'inline-block';
+        probe.innerHTML = '<span style="position:absolute;visibility:hidden"><span style="display:inline"></span></span>';
+        const ruler = probe.firstChild.firstChild;
+        const wide = (text) => {
+          ruler.textContent = text;
+          return ruler.getBoundingClientRect().width;
+        };
+
+        const place = () => {
+          if (!bare) return;
+          em = parseFloat(getComputedStyle(bare).fontSize);
+          spots.forEach((spot) => {
+            const word = bare.children[spot.n];
+            if (!word) return;
+            word.append(probe);
+            const x = word.getBoundingClientRect().left + wide(spot.text.slice(0, spot.i + 1)) - wide(spot.text[spot.i]);
+            // Browsers paint a line of text with its baseline on a whole device pixel.
+            const y = Math.round(probe.getBoundingClientRect().bottom * devicePixelRatio) / devicePixelRatio;
+            probe.remove();
+            const set = `translate(${x} ${y}) scale(${em / EM})`;
+            spot.groups.forEach((group) => group.setAttribute('transform', set));
+            spot.marks.forEach((mark) => {
+              mark.x = x + (mark.cx * em) / EM;
+              mark.y = y + (mark.cy * em) / EM;
+              mark.s = along(mark.x, mark.y);
+            });
+          });
+        };
+
+        // Made once, when Allo has loaded: in each field a copy of the name in plain letters
+        // and the three marks as shapes. Both stay hidden until a mark leaves its letter.
+        const dress = () => {
+          const plain = over.querySelector('.name').cloneNode(true);
+          const [low, high] = stage.querySelectorAll('.marks');
+          let shapes = '';
+          [...plain.children].forEach((word, n) => {
+            const letters = [...word.textContent];
+            const text = letters.map((letter) => (MARKS[letter] || letter)[0]).join('');
+            letters.forEach((letter, i) => {
+              if (!MARKS[letter]) return;
+              spots.push({ n, i, text, lean: [[0, 0], [0, 0]] });
+              shapes += '<g>' + MARKS[letter].slice(1).map((d) => `<path d="${d}"/>`).join('') + '</g>';
+            });
+            word.textContent = text;
+          });
+          plain.classList.add('bare');
+          plain.setAttribute('aria-hidden', 'true');
+          plain.inert = true;
+          stage.querySelectorAll('.name').forEach((name) => name.after(plain.cloneNode(true)));
+          bare = stage.querySelector('.bare');
+          low.innerHTML = high.innerHTML = shapes;
+          spots.forEach((spot, k) => {
+            spot.groups = [low.children[k], high.children[k]];
+            spot.marks = [...low.children[k].children].map((path, j, all) => {
+              const box = path.getBBox();
+              return {
+                paths: [path, high.children[k].children[j]],
+                cx: box.x + box.width / 2,
+                cy: box.y + box.height / 2,
+                foot: box.y + box.height,
+                alone: all.length < 2, // a mark alone on its letter can turn in the air
+                squash: [0, 0],
+                tilt: [0, 0],
+                kick: 0,
+                turn: 0,
+              };
+            });
+          });
+          place();
+        };
+
+        // A mark in the air follows a parabola from its last throw, whatever the frame
+        // rate. Returns its height above the letter, its speed and the seconds flown.
+        const aloft = (mark, now) => {
+          if (!mark.air) return [0, 0, 0];
+          const t = (now - mark.from) / 1000;
+          return [mark.h + mark.up * t - (GRAVITY * t * t) / 2, mark.up - GRAVITY * t, t];
+        };
+
+        // A push on a mark's squash or tilt that came `late` seconds before now.
+        const push = (spring, speed, late) => {
+          const [p, v] = swing(0, speed, SOFT, DAMP, late);
+          spring[0] += p;
+          spring[1] += v;
+        };
+
+        // A throw adds to whatever the mark is doing: one still in the air keeps its height
+        // and speed, up to the ceiling. A hard throw turns a lone mark once round before it
+        // lands, a soft one only tips it.
+        const launch = (mark) => {
+          const [h, v, t] = aloft(mark, mark.due);
+          mark.turn *= mark.air ? 1 - t / mark.span : 0; // what is left of a turn it was making
+          if (mark.alone) {
+            if (mark.kick > leap(0.6)) mark.turn = mark.turn || 360 * mark.way;
+            else push(mark.tilt, (20 * KICK * mark.way * mark.kick) / leap(0.6), (clock - mark.due) / 1000);
+          }
+          mark.h = h;
+          mark.up = Math.min(v + mark.kick, Math.sqrt(2 * GRAVITY * Math.max(0, TOP - h)));
+          mark.span = (mark.up + Math.sqrt(mark.up * mark.up + 2 * GRAVITY * h)) / GRAVITY;
+          mark.from = mark.due;
+          mark.air = true;
+          mark.kick = 0;
+        };
+
+        // Lands the mark if its flight has ended by the time given. The faster it comes
+        // down the flatter it lands, and a turn carries on a little past its end.
+        const land = (mark, by) => {
+          const touch = mark.from + mark.span * 1000;
+          if (!mark.air || touch > by) return;
+          const late = (clock - touch) / 1000;
+          push(mark.squash, (0.25 * KICK * (GRAVITY * mark.span - mark.up)) / leap(1), late);
+          push(mark.tilt, (0.4 * mark.turn) / mark.span, late);
+          mark.turn = 0;
+          mark.air = false;
+        };
+
+        // The string throws the marks as it is let go. Each jumps by how far the string was
+        // pulled at its own place: a triangle that peaks under the finger.
+        const toss = (force, where) => {
+          if (calm.matches) return;
+          wake();
+          const now = clock + Math.min(50, performance.now() - then); // on the marks' clock
+          spots.forEach((spot) => {
+            spot.marks
+              .map((mark) => [force * (mark.s < where ? mark.s / where : (1 - mark.s) / (1 - where)), mark])
+              .sort((a, b) => b[0] - a[0])
+              .forEach(([share, mark], i) => {
+                if (!mark.kick) mark.due = now + 70 * i; // the dots of "ü" go one after the other
+                mark.kick += leap(share);
+                mark.way = mark.s < where ? 1 : -1; // it turns away from the finger
+              });
+          });
+        };
+
+        const settled = ([p, v], small) => Math.abs(p) < small && Math.abs(v) < 20 * small;
+
+        // One frame of the marks. Returns whether any of them is still off its letter.
+        const fly = (dt) => {
+          let busy = false;
+          spots.forEach((spot) => {
+            const [one, two] = spot.marks;
+            // While the string is held, the dots of "ü" lean toward the finger, like eyes.
+            const look = [0, 0];
+            if (hold && two && !calm.matches) {
+              const dx = hold.x - (one.x + two.x) / 2;
+              const dy = hold.y - (one.y + two.y) / 2;
+              const far = Math.max(em, Math.hypot(dx, dy)) / LEAN;
+              look[0] = dx / far;
+              look[1] = dy / far;
+            }
+            spot.lean = spot.lean.map(([p, v], i) => {
+              const [q, w] = swing(p - look[i], v, 25, 24.9, dt); // about 80 ms, all but critically damped
+              return [q + look[i], w];
+            });
+            const [[lx], [ly]] = spot.lean;
+
+            spot.marks.forEach((mark) => {
+              mark.squash = swing(...mark.squash, SOFT, DAMP, dt);
+              mark.tilt = swing(...mark.tilt, SOFT, DAMP, dt);
+              const due = mark.kick && mark.due <= clock;
+              land(mark, due ? mark.due : clock);
+              if (due) launch(mark);
+              land(mark, clock);
+
+              const [h, , t] = aloft(mark, clock);
+              const q = mark.squash[0];
+              const turn = mark.tilt[0] + (mark.air ? mark.turn * (t / mark.span - 1) : 0);
+              const still =
+                !mark.air &&
+                !mark.kick &&
+                settled(mark.squash, 0.002) &&
+                settled(mark.tilt, 0.05) &&
+                spot.lean.every((axis) => settled(axis, 0.0005));
+              // Back on its letter a mark has no transform at all, as the line at rest has no clip.
+              const move =
+                `translate(${EM * lx} ${EM * (ly - h)}) ` +
+                `translate(${mark.cx} ${mark.foot}) scale(${1 + 0.55 * q} ${1 - q}) translate(${-mark.cx} ${-mark.foot}) ` +
+                `rotate(${turn} ${mark.cx} ${mark.cy})`;
+              mark.paths.forEach((path) => (still ? path.removeAttribute('transform') : path.setAttribute('transform', move)));
+              if (!still) busy = true;
+            });
+          });
+          // The swap to plain letters and drawn marks happens in one frame, and so does the
+          // swap back, so the name is never seen without its marks.
+          if (busy && !stage.classList.contains('drawn')) place();
+          stage.classList.toggle('drawn', busy);
+          return busy;
         };
 
         // Sound stays off until the visitor asks for it. Then every pluck plays one note:
@@ -595,7 +856,10 @@
           const [where, pull] = aim(hold.x, hold.y);
           hold = null;
           stage.classList.remove('held');
-          if (ring) next(Math.min(1, Math.abs(pull) / (0.3 * Math.min(W, H))), where);
+          if (!ring) return;
+          const force = Math.min(1, Math.abs(pull) / (0.3 * Math.min(W, H)));
+          next(force, where);
+          toss(force, where);
         };
 
         // A pluck with no finger, for the keyboard: pull a little, then let go.
@@ -668,15 +932,22 @@
 
         addEventListener('resize', () => {
           measure();
+          place();
           draw(!!raf);
         });
         measure();
 
-        // The line settles with one small wobble: the only hint that it is elastic.
+        // The marks can only be drawn once Allo is really there. Until then, and if it
+        // never comes, they stay on their letters.
+        doc.fonts.load('800 1em Allo').then((faces) => faces.some((face) => face.status === 'loaded') && dress(), () => {});
+
+        // The line settles with one small wobble: the only hint that it is elastic. It
+        // gives the marks a small throw too, if they are drawn by then.
         if (!calm.matches) {
           setTimeout(() => {
             if (hold || raf) return;
             vel[0] = 0.03 * Math.min(W, H) * TAU * PITCH;
+            toss(0.35, 0.5);
             wake();
           }, 400);
         }
@@ -730,6 +1001,7 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><path class="cone" d="M2.6 9.3h3.5l5.2-4.4v14.2l-5.2-4.4H2.6z"/><path class="mute" d="m15.6 9.2 5.6 5.6m0-5.6-5.6 5.6"/><path class="waves" d="M15.4 8.9a4.4 4.4 0 0 1 0 6.2m3.1-9.3a8.8 8.8 0 0 1 0 12.4"/></svg>
         </button>
       </div>
+      <svg class="marks" aria-hidden="true"></svg>
       <svg class="rope" aria-hidden="true"><path/></svg>
     </div>
 
@@ -743,6 +1015,7 @@
           <svg viewBox="0 0 24 24"><path class="cone" d="M2.6 9.3h3.5l5.2-4.4v14.2l-5.2-4.4H2.6z"/><path class="mute" d="m15.6 9.2 5.6 5.6m0-5.6-5.6 5.6"/><path class="waves" d="M15.4 8.9a4.4 4.4 0 0 1 0 6.2m3.1-9.3a8.8 8.8 0 0 1 0 12.4"/></svg>
         </span>
       </div>
+      <svg class="marks"></svg>
       <svg class="rope"><path/></svg>
     </div>
   </main>
