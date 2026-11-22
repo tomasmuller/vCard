@@ -635,13 +635,14 @@
         const dress = () => {
           const plain = over.querySelector('.name').cloneNode(true);
           const [low, high] = stage.querySelectorAll('.marks');
+          const found = [];
           let shapes = '';
           [...plain.children].forEach((word, n) => {
             const letters = [...word.textContent];
             const text = letters.map((letter) => (MARKS[letter] || letter)[0]).join('');
             letters.forEach((letter, i) => {
               if (!MARKS[letter]) return;
-              spots.push({ n, i, text, lean: [[0, 0], [0, 0]] });
+              found.push({ n, i, text, lean: [[0, 0], [0, 0]] });
               shapes += '<g>' + MARKS[letter].slice(1).map((d) => `<path d="${d}"/>`).join('') + '</g>';
             });
             word.textContent = text;
@@ -650,9 +651,8 @@
           plain.setAttribute('aria-hidden', 'true');
           plain.inert = true;
           stage.querySelectorAll('.name').forEach((name) => name.after(plain.cloneNode(true)));
-          bare = stage.querySelector('.bare');
           low.innerHTML = high.innerHTML = shapes;
-          spots.forEach((spot, k) => {
+          found.forEach((spot, k) => {
             spot.groups = [low.children[k], high.children[k]];
             spot.marks = [...low.children[k].children].map((path, j, all) => {
               const box = path.getBBox();
@@ -669,6 +669,10 @@
               };
             });
           });
+          // The frames get to see the marks only now that every one of them is whole. A
+          // half-made one would throw in a frame, and the string would not start again.
+          bare = stage.querySelector('.bare');
+          spots.push(...found);
           place();
         };
 
