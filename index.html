@@ -591,6 +591,7 @@
         const KICK = 1.66 * SOFT; // the push that makes such a spring peak at 1
         const LEAN = 0.03; // how far the dots of "ü" lean toward the finger
         const TOP = 1.8; // however fast the plucks come, no mark climbs higher
+        const ROUND = (2 * leap(0.6)) / GRAVITY; // s: the least any turn takes, the flight of the softest throw that turns a mark
         const spots = []; // one for each letter that carries marks
         let bare; // the copy of the name in plain letters
         let em; // the name's font size, px
@@ -693,17 +694,20 @@
 
         // A throw adds to whatever the mark is doing: one still in the air keeps its height
         // and speed, up to the ceiling. A hard throw turns a lone mark once round before it
-        // lands, a soft one only tips it.
+        // lands, a soft one only tips it. A hard throw that cannot keep the mark up for as
+        // long as a turn from its letter takes, as on a mark about to land, only tips it
+        // too, so no turn is ever quicker. A throw during a turn only gives it more time.
         const launch = (mark) => {
           const [h, v, t] = aloft(mark, mark.due);
           mark.turn *= mark.air ? 1 - t / mark.span : 0; // what is left of a turn it was making
-          if (mark.alone) {
-            if (mark.kick > leap(0.6)) mark.turn = mark.turn || 360 * mark.way;
-            else push(mark.tilt, (20 * KICK * mark.way * mark.kick) / leap(0.6), (clock - mark.due) / 1000);
-          }
           mark.h = h;
           mark.up = Math.min(v + mark.kick, Math.sqrt(2 * GRAVITY * Math.max(0, TOP - h)));
           mark.span = (mark.up + Math.sqrt(mark.up * mark.up + 2 * GRAVITY * h)) / GRAVITY;
+          if (mark.alone) {
+            const hard = mark.kick > leap(0.6);
+            if (hard && !mark.turn && mark.span >= ROUND) mark.turn = 360 * mark.way;
+            if (!hard || !mark.turn) push(mark.tilt, (20 * KICK * mark.way * mark.kick) / leap(0.6), (clock - mark.due) / 1000);
+          }
           mark.from = mark.due;
           mark.air = true;
           mark.kick = 0;
