@@ -605,14 +605,16 @@
         let em; // the name's font size, px
 
         // Each mark is drawn from its letter's origin on the baseline. Nothing may wrap the
-        // letter, or kerning would break, so two helpers find the spot and are taken out
+        // letter, or kerning would break, so helpers find the spot and are taken out
         // again. A box of no size at the end of the word stands on the baseline, and a
         // hidden ruler inside it gives the width of the word up to the letter. The ruler
-        // is an inline box, the only kind whose width no browser rounds.
+        // is an inline box, the only kind whose width no browser rounds. Beside it, a
+        // hair: a border thinner than a device pixel is laid out one device pixel wide.
         const probe = doc.createElement('span');
         probe.style.display = 'inline-block';
-        probe.innerHTML = '<span style="position:absolute;visibility:hidden"><span style="display:inline"></span></span>';
-        const ruler = probe.firstChild.firstChild;
+        probe.innerHTML =
+          '<span style="position:absolute;visibility:hidden"><span style="display:inline"></span><span style="display:block;border-top:0.01px solid"></span></span>';
+        const [ruler, hair] = probe.firstChild.children;
         const wide = (text) => {
           ruler.textContent = text;
           return ruler.getBoundingClientRect().width;
@@ -629,8 +631,13 @@
             if (!word) return;
             word.append(probe);
             const x = word.getBoundingClientRect().left + wide(spot.text.slice(0, spot.i + 1)) - wide(spot.text[spot.i]);
-            // Browsers paint a line of text with its baseline on a whole device pixel.
-            const y = Math.round(probe.getBoundingClientRect().bottom * devicePixelRatio) / devicePixelRatio;
+            // Browsers paint a line of text with its baseline on a whole device pixel. Safari
+            // keeps devicePixelRatio however far the page is zoomed, but the hair shrinks with
+            // the zoom. It is believed only when it is finer than that ratio says, and by more
+            // than layout rounds it.
+            const hairline = hair.getBoundingClientRect().height;
+            const grid = hairline > 0 && hairline * devicePixelRatio < 0.92 ? 1 / hairline : devicePixelRatio;
+            const y = Math.round(probe.getBoundingClientRect().bottom * grid) / grid;
             probe.remove();
             const set = `translate(${x} ${y}) scale(${em / EM})`;
             spot.groups.forEach((group) => group.setAttribute('transform', set));
