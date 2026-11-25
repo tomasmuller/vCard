@@ -533,6 +533,7 @@
         };
 
         const frame = (now) => {
+          raf = 0; // until the end of the frame: if anything throws on the way, the next touch starts the frames again
           const dt = Math.max(0, Math.min(0.05, (now - then) / 1000));
           then = now;
           clock += dt * 1000;
@@ -558,7 +559,14 @@
             }
           }
           draw(moving);
-          if (fly(dt)) moving = true;
+          try {
+            if (fly(dt)) moving = true;
+          } catch (error) {
+            // A fault in the marks must not stop the string: they stay on their letters from now on.
+            spots.length = 0;
+            stage.classList.remove('drawn');
+            console.error(error);
+          }
           raf = moving ? requestAnimationFrame(frame) : 0;
         };
 
@@ -610,10 +618,13 @@
           return ruler.getBoundingClientRect().width;
         };
 
-        const place = () => {
-          if (!bare) return;
-          em = parseFloat(getComputedStyle(bare).fontSize);
-          spots.forEach((spot) => {
+        // Returns false, changing nothing, if there is nothing laid out to measure, as in a
+        // window of no size or with the copy taken out of the page.
+        const place = (list = spots) => {
+          const size = bare && bare.isConnected ? parseFloat(getComputedStyle(bare).fontSize) : 0;
+          if (!(size > 0 && L > 0)) return false;
+          em = size;
+          list.forEach((spot) => {
             const word = bare.children[spot.n];
             if (!word) return;
             word.append(probe);
@@ -629,6 +640,7 @@
               mark.s = along(mark.x, mark.y);
             });
           });
+          return true;
         };
 
         // Made once, when Allo has loaded: in each field a copy of the name in plain letters
@@ -670,11 +682,10 @@
               };
             });
           });
-          // The frames get to see the marks only now that every one of them is whole. A
-          // half-made one would throw in a frame, and the string would not start again.
+          // The frames get to see the marks only once every one of them is whole and has its
+          // place. With nothing to measure yet, they stay on their letters for this visit.
           bare = stage.querySelector('.bare');
-          spots.push(...found);
-          place();
+          if (place(found)) spots.push(...found);
         };
 
         // A mark in the air follows a parabola from its last throw, whatever the frame
@@ -792,9 +803,9 @@
             });
           });
           // The swap to plain letters and drawn marks happens in one frame, and so does the
-          // swap back, so the name is never seen without its marks.
-          if (busy && !stage.classList.contains('drawn')) place();
-          stage.classList.toggle('drawn', busy);
+          // swap back, so the name is never seen without its marks. Marks that cannot be
+          // measured fly unseen, and the name keeps its own.
+          stage.classList.toggle('drawn', busy && (stage.classList.contains('drawn') || place()));
           return busy;
         };
 
@@ -947,7 +958,10 @@
 
         // The marks can only be drawn once Allo is really there. Until then, and if it
         // never comes, they stay on their letters.
-        doc.fonts.load('800 1em Allo').then((faces) => faces.some((face) => face.status === 'loaded') && dress(), () => {});
+        doc.fonts
+          .load('800 1em Allo')
+          .then((faces) => faces.some((face) => face.status === 'loaded') && dress())
+          .catch((error) => console.error(error));
 
         // The line settles with one small wobble: the only hint that it is elastic. It
         // gives the marks a small throw too, if they are drawn by then.
