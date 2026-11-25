@@ -68,7 +68,9 @@ test('the drawn marks belong to the name as it is set', () => {
   const table = html.match(/const MARKS = \{\n([\s\S]*?)\n\s*\};/);
   assert.ok(table, 'MARKS table not found in index.html');
   const rows = table[1].split('\n').map((row) => {
-    const [, letter, plain, paths] = row.match(/^\s*(\S): \['(\S)', (.*)\],$/);
+    const parts = row.match(/^\s*(\S): \['(\S)', (.*)\],$/);
+    assert.ok(parts, `this row of the MARKS table is not as _tools/marks.py prints it: ${row.trim()}`);
+    const [, letter, plain, paths] = parts;
     return { letter, plain, paths: paths.match(/'[^']+'/g).map((path) => path.slice(1, -1)) };
   });
   // One row for each letter of the name that carries a mark, in the order they appear.
@@ -77,8 +79,9 @@ test('the drawn marks belong to the name as it is set', () => {
   for (const { letter, plain, paths } of rows) {
     assert.equal(plain, letter.normalize('NFD')[0]);
     for (const path of paths) {
-      // One closed outline, starting above the baseline: y points down, so its y is negative.
-      assert.match(path, /^M[\d.]+ -[\d.]+[-\d. A-Z]+Z$/, `the outline for "${letter}" is not a closed path above the baseline`);
+      // Closed outlines, each starting above the baseline: y points down, so its y is
+      // negative. A mark has more than one only where it has a hole, as the ring of "å" would.
+      assert.match(path, /^(?:M-?[\d.]+ -[\d.]+[-\d. A-LN-Y]+Z)+$/, `the mark of "${letter}" is not made of closed outlines above the baseline`);
     }
   }
   assert.deepEqual(rows.map((row) => row.paths.length), [1, 2]); // one acute, two dots

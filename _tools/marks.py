@@ -30,14 +30,21 @@ from fontTools.varLib import instancer
 ROOT = Path(__file__).resolve().parent.parent
 
 
+def find(pattern, text, what):
+    found = re.search(pattern, text, re.S)
+    if not found:
+        sys.exit(f"Cannot find {what} in index.html. If the page changed, update page_facts() in marks.py.")
+    return found.group(1)
+
+
 def page_facts(html):
     """The name, the font file and the variation settings, as index.html states them.
     The settings keep the page's own spelling, so the test can compare them as text."""
-    name = re.sub(r"<[^>]+>", "", re.search(r"<h1[^>]*>(.*?)</h1>", html, re.S).group(1))
-    font = re.search(r"url\((fonts/[^)]+\.woff2)\)", html).group(1)
-    rule = re.search(r"\n\s*\.name \{(.*?)\}", html, re.S).group(1)
-    where = {"wght": re.search(r"font-weight: (\d+)", rule).group(1)}
-    settings = re.search(r"font-variation-settings: ([^;]+);", rule).group(1)
+    name = re.sub(r"<[^>]+>", "", find(r"<h1[^>]*>(.*?)</h1>", html, "the name in an <h1>"))
+    font = find(r"url\((fonts/[^)]+\.woff2)\)", html, "the font file")
+    rule = find(r"\n\s*\.name \{(.*?)\}", html, "the .name rule")
+    where = {"wght": find(r"font-weight: (\d+)", rule, "a font-weight in the .name rule")}
+    settings = find(r"font-variation-settings: ([^;]+);", rule, "font-variation-settings in the .name rule")
     where.update(re.findall(r'"(\w{4})" ([\d.]+)', settings))
     return name, font, where
 
@@ -47,8 +54,10 @@ def number(value):
 
 
 def marks_of(font, letter):
-    """One SVG path per contour of the marks on a letter: font units, y down, measured
-    from the origin of the plain letter on the baseline. Returns (plain letter, paths)."""
+    """One SVG path per mark on a letter, left to right: font units, y down, measured
+    from the origin of the plain letter on the baseline. Each contour is a mark of its
+    own, like each dot of "ü", except one inside another: that is a hole, as in the ring
+    of "å", and stays in the path of the contour around it. Returns (plain letter, paths)."""
     cmap = font.getBestCmap()
     glyphs = font.getGlyphSet()
     plain = unicodedata.normalize("NFD", letter)[0]
@@ -63,7 +72,7 @@ def marks_of(font, letter):
     base = next((shift for glyph, shift in parts if glyph == cmap[ord(plain)]), None)
     if base is None:
         sys.exit(f'"{letter}" is not built from "{plain}" plus marks in this font.')
-    found = []
+    contours = []  # (box, steps, transform)
     for glyph, shift in parts:
         if glyph == cmap[ord(plain)]:
             continue
@@ -71,18 +80,33 @@ def marks_of(font, letter):
         place = Identity.scale(1, -1).translate(-base[4], -base[5]).transform(shift)
         record = DecomposingRecordingPen(glyphs)
         glyphs[glyph].draw(record)
-        contour = []
+        steps = []
         for step in record.value:
-            contour.append(step)
+            steps.append(step)
             if step[0] in ("closePath", "endPath"):
-                path = SVGPathPen(glyphs, ntos=number)
-                pen = TransformPen(path, place)
-                for method, args in contour:
-                    getattr(pen, method)(*args)
-                left = min(place.transformPoint(point)[0] for _, args in contour for point in args if point)
-                found.append((left, path.getCommands()))
-                contour = []
-    return plain, [commands for _, commands in sorted(found)]
+                xs, ys = zip(*(place.transformPoint(point) for _, args in steps for point in args if point))
+                contours.append(((min(xs), min(ys), max(xs), max(ys)), steps, place))
+                steps = []
+
+    def within(i, j):
+        """Whether contour i lies inside contour j's box (of two equal boxes, the later one)."""
+        a, b = contours[i][0], contours[j][0]
+        return i != j and b[0] <= a[0] and b[1] <= a[1] and a[2] <= b[2] and a[3] <= b[3] and (a != b or i > j)
+
+    marks = {i: [i] for i in range(len(contours)) if not any(within(i, j) for j in range(len(contours)))}
+    for i in range(len(contours)):
+        if i not in marks:
+            marks[next(j for j in marks if within(i, j))].append(i)
+    paths = []
+    for _, members in sorted(marks.items(), key=lambda mark: contours[mark[0]][0][0]):
+        path = SVGPathPen(glyphs, ntos=number)
+        for i in members:
+            _, steps, place = contours[i]
+            pen = TransformPen(path, place)
+            for method, args in steps:
+                getattr(pen, method)(*args)
+        paths.append(path.getCommands())
+    return plain, paths
 
 
 def main():
